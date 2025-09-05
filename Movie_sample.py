@@ -1,10 +1,10 @@
 import requests
 
 # TMDb APIキーをここに入力
-API_KEY = "YOUR_API_KEY"
+API_KEY = "b86608d15c12a027fd7d907e6b056524"
 
 # 検索したい映画タイトル
-query = "七人の侍"
+query = "ゼロ・コンタクト"
 
 # 映画検索（日本語対応）
 search_url = f"https://api.themoviedb.org/3/search/movie"
