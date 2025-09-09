@@ -1,0 +1,4 @@
+クライアント ID
+1046062638548-jr6fmtvspgiu5a0jinioisqg5s0a63ig.apps.googleusercontent.com
+クライアント シークレット
+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
