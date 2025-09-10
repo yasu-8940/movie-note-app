@@ -10,6 +10,7 @@ __pycache__/
 # Google API 認証関連
 credentials.json
 token.pickle
+token_b64.txt
 
 # ビルド / 配布物
 build/
