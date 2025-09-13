@@ -7,6 +7,14 @@ from openpyxl import Workbook, load_workbook
 from openpyxl.drawing.image import Image as XLImage
 from io import BytesIO
 from openpyxl.styles import Alignment, Font, PatternFill
+from googleapiclient.discovery import build
+import pickle
+from google.auth.transport.requests import Request
+from datetime import datetime
+from io import BytesIO
+import io
+from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload, MediaIoBaseDownload
+from PIL import Image as PILImage
 
 # .env から API_KEY を読み込み
 load_dotenv()
@@ -43,43 +51,6 @@ def get_gdrive_service():
     return build("drive", "v3", credentials=creds)
 
 # =========================================================
-# Google Drive 上書き保存関数
-# =========================================================
-
-def upload_to_drive(excel_data, folder_id, filename="movie_note.xlsx"):
-    service = get_gdrive_service()
-
-    # 既存ファイルがあるか検索
-    query = f"'{folder_id}' in parents and name='{filename}' and trashed=false"
-    results = service.files().list(q=query, fields="files(id)").execute()
-    items = results.get("files", [])
-
-    media = MediaIoBaseUpload(
-        io.BytesIO(excel_data),
-        mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        resumable=False
-    )
-
-    if items:
-        # 更新（上書き）
-        file_id = items[0]["id"]
-        updated_file = service.files().update(
-            fileId=file_id,
-            media_body=media,
-            fields="id, name, modifiedTime, version"
-        ).execute()
-        return updated_file["id"], updated_file["modifiedTime"], updated_file.get("version")
-    else:
-        # 新規作成
-        file_metadata = {"name": filename, "parents": [folder_id]}
-        new_file = service.files().create(
-            body=file_metadata,
-            media_body=media,
-            fields="id, name, modifiedTime, version"
-        ).execute()
-        return new_file["id"], new_file["modifiedTime"], new_file.get("version")
-
-# =========================================================
 # Driveからファイルをダウンロード
 # =========================================================
 
@@ -112,8 +83,8 @@ def format_excel(ws):
 
     # 列幅設定
     col_widths = {
-        "A": 20, "B": 10, "C": 15, "D": 20,
-        "E": 40, "F": 40, "G": 40
+        "A": 20, "B": 20, "C": 10, "D": 15, "E": 20,
+        "F": 40, "G": 40, "H": 40
     }
     for col, width in col_widths.items():
         ws.column_dimensions[col].width = width
@@ -123,12 +94,12 @@ def format_excel(ws):
         ws.row_dimensions[row].height = 120
 
     # A〜H列：縦位置 上詰め
-    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=7):
+    for row in ws.iter_rows(min_row=2, max_row=ws.max_row, min_col=1, max_col=8):
         for cell in row:
             cell.alignment = Alignment(vertical="top")
 
-    # D, E列：折り返して表示
-    for col in ["D", "E"]:
+    # E, F列：折り返して表示
+    for col in ["E", "F"]:
         for row in range(2, ws.max_row + 1):
             ws[f"{col}{row}"].alignment = Alignment(vertical="top", wrap_text=True)
 
@@ -149,43 +120,143 @@ def search_movies(query):
     res = requests.get(url, params=params)
     return res.json().get("results", [])
 
-def get_movie_details(movie_id):
-    url = f"{BASE_URL}/movie/{movie_id}"
-    params = {"api_key": API_KEY, "language": "ja-JP", "append_to_response": "credits"}
-    res = requests.get(url, params=params)
-    return res.json()
+def get_movie_details(movie_id, api_key):
+    url = f"https://api.themoviedb.org/3/movie/{movie_id}?api_key={api_key}&language=ja-JP&append_to_response=credits"
+    response = requests.get(url)
+    data = response.json()
 
-def save_to_excel(movie_data, poster_url):
-    # Excelファイルがあるか確認
+    title = data.get("title", "")
+    year = data.get("release_date", "")[:4]
+    overview = data.get("overview", "")
+    director = ""
+    if "credits" in data:
+        crew = data["credits"].get("crew", [])
+        for person in crew:
+            if person.get("job") == "Director":
+                director = person.get("name", "")
+                break
+
+    cast = []
+    if "credits" in data:
+        cast = [c.get("name", "") for c in data["credits"].get("cast", [])[:3]]
+
+    # ポスターURL
+    poster_path = data.get("poster_path")
+    poster_url = f"https://image.tmdb.org/t/p/w200{poster_path}" if poster_path else None
+
+    return {
+        "タイトル": title,
+        "公開年": year,
+        "監督": director,
+        "出演者": ", ".join(cast),
+        "概要": overview,
+        "感想": "",  # 入力時に追加
+        "ポスター": poster_url
+    }
+
+# =========================================================
+# EXCELファイルを作成する
+# =========================================================
+
+def save_to_excel(movies, folder_id):
+    """映画データをExcelに保存し、Google Driveにもアップロードする"""
+
+    print("保存対象データ:", movies) # デバッグ用
+
+    # Excelファイルが既に存在すれば開く、なければ新規作成
     if os.path.exists(EXCEL_FILE):
         wb = load_workbook(EXCEL_FILE)
         ws = wb.active
     else:
         wb = Workbook()
         ws = wb.active
-        ws.append(["タイトル", "公開年", "監督", "出演者", "概要", "感想", "ポスター"])   # ヘッダー
+        ws.append(["登録日", "タイトル", "公開年", "監督", "出演者", "概要", "感想", "ポスター"])  # ヘッダー行
 
-    # 次の行番号
-    row = ws.max_row + 1
+    # 画像バイト列を保持しておくリスト（openpyxl が保存時に参照するので生存させる）
+    image_streams = []
 
-    # 文字情報を追加
-    ws.cell(row=row, column=1, value=movie_data["タイトル"])
-    ws.cell(row=row, column=2, value=movie_data["公開年"])
-    ws.cell(row=row, column=3, value=movie_data["監督"])
-    ws.cell(row=row, column=4, value=movie_data["出演者"])
-    ws.cell(row=row, column=5, value=movie_data["概要"])
-    ws.cell(row=row, column=6, value=movie_data["感想"])
+    today = datetime.now().strftime("%Y-%m-%d")
 
-    # ポスター画像をダウンロードして貼り付け
-    if poster_url:
-        img_data = requests.get(poster_url).content
-        img = XLImage(BytesIO(img_data))
-        img.width, img.height = 80, 120  # サムネイルサイズ
-        ws.add_image(img, f"G{row}")  # F列に配置
+    for movie in movies:
+        # 1行追加（ポスターは空セルにしておく）
+        ws.append([
+            today,
+            movie.get("タイトル", ""),
+            movie.get("公開年", ""),
+            movie.get("監督", ""),
+            movie.get("出演者", ""),
+            movie.get("概要", ""),
+            movie.get("感想", ""),
+            ""  # ポスター列は画像で埋める（H列）
+        ])
 
-    format_excel(ws)
+        # 今追加した行番号
+        row_num = ws.max_row
 
+        # ポスター処理はここ（ループ内）
+        poster_url = movie.get("ポスター")
+        print(f"[DEBUG] row {row_num} poster_url: {poster_url}")
+
+        if poster_url:
+            try:
+                # ダウンロード（stream=True は任意）
+                resp = requests.get(poster_url, timeout=10)
+                resp.raise_for_status()
+
+                # BytesIO に読み込み -> PIL でリサイズ -> 再度 BytesIO に保存
+                img_data = BytesIO(resp.content)
+                pil_img = PILImage.open(img_data)
+
+                # サイズ調整（幅 80 px 例）
+                max_width = 80
+                if pil_img.width > max_width:
+                    ratio = max_width / pil_img.width
+                    new_size = (max_width, int(pil_img.height * ratio))
+                    pil_img = pil_img.resize(new_size)
+                # else: 小さい画像はそのまま
+
+                img_bytes = BytesIO()
+                pil_img.save(img_bytes, format="PNG")
+                img_bytes.seek(0)
+
+                # 参照を保持しておく（これをしないと保存時に閉じられることがある）
+                image_streams.append(img_bytes)
+
+                # openpyxl Image を作ってワークシートに追加
+                xl_img = XLImage(img_bytes)
+                ws.add_image(xl_img, f"H{row_num}")
+                print(f"[DEBUG] ポスター貼付成功: H{row_num}")
+            except Exception as e:
+                print("[WARN] ポスター画像の取得/処理に失敗:", e)
+
+    # 見栄え整形（必要に応じて format_excel を呼ぶ / ここはあなたの format_excel を使う）
+    try:
+        format_excel(ws)
+    except Exception as e:
+        print("[WARN] format_excel でエラー:", e)
+
+    # ローカルに保存（バックアップとして保持）
     wb.save(EXCEL_FILE)
+
+    # --- Google Drive にアップロード ---
+    service = get_gdrive_service()
+
+    query = f"'{folder_id}' in parents and name='movie_note.xlsx' and trashed=false"
+    results = service.files().list(q=query, fields="files(id)").execute()
+    items = results.get("files", [])
+
+    # ローカルファイルを開いてアップロード
+    with open(EXCEL_FILE, "rb") as f:
+        media = MediaIoBaseUpload(f, mimetype="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
+
+        if items:
+            file_id = items[0]["id"]
+            service.files().update(fileId=file_id, media_body=media).execute()
+            print("✅ Google Drive 上のファイルを更新しました")
+        else:
+            file_metadata = {"name": "movie_note.xlsx", "parents": [folder_id]}
+            service.files().create(body=file_metadata, media_body=media, fields="id").execute()
+            print("✅ Google Drive に新規アップロードしました")
 
 st.title("🎬 映画検索アプリ")
 
@@ -198,38 +269,20 @@ if query:
         choice = st.radio("検索結果から選択してください:", titles)
 
         selected = results[titles.index(choice)]
-        details = get_movie_details(selected["id"])
+        details = get_movie_details(selected["id"],API_KEY)
 
-        # ポスターURL
-        poster_url = None
-        if selected.get("poster_path"):
-            poster_url = f"https://image.tmdb.org/t/p/w200{selected['poster_path']}"
-            st.image(poster_url)
+        # ポスターを表示（あれば）
+        if details.get("ポスター"):
+            st.image(details["ポスター"])
 
         # 監督
-        director = [c["name"] for c in details["credits"]["crew"] if c["job"] == "Director"]
-        director = director[0] if director else "不明"
+        st.write("監督:", details.get("監督", "不明"))
 
         # 俳優（上位3人）
-        cast = [c["name"] for c in details["credits"]["cast"][:3]]
-
-        st.write(f"**監督**: {director}")
-        st.write(f"**出演者**: {', '.join(cast)}")
+        st.write("出演者:", details.get("出演者", "不明"))
 
         # 感想入力エリア
         comment = st.text_area("感想を入力してください")
-
-        # if st.button("Excelに保存"):
-        #     movie_data = {
-        #         "タイトル": details["title"],
-        #         "公開年": details.get("release_date", "")[:4],
-        #         "監督": director,
-        #         "出演者": ", ".join(cast),
-        #         "概要": details.get("overview", ""),
-        #         "感想": comment
-        #     }
-        #     save_to_excel(movie_data, poster_url)
-        #     st.success("Excelに保存しました！（サムネイル付き）")
 
         # ✅ Streamlit Google Drive保存ボタン 
         if st.button("📤 Google Driveに保存（上書き）"):
@@ -246,15 +299,27 @@ if query:
             else:
                 st.info("DEBUG: 既存ファイルなし（新規作成）")
 
-            # 2. 行を追加
-            # st.write("DEBUG 選択書籍:", selected_book.get('title'))
-            # st.write("DEBUG 感想:", comment)
-            # excel_data = create_excel_with_image(selected_book, comment, base_xlsx_bytes=existing_bytes)
-
             # 3. Drive へ保存（結果も確認表示）
-            file_id, modified, version = upload_to_drive(excel_data, folder_id, filename="book_note.xlsx")
-            st.success(f"✅ Google Driveに保存しました！\nID: {file_id}\n更新時刻: {modified}\n版: {version}")
-            st.caption(f"https://drive.google.com/file/d/{file_id}/view")
+            movie_data = [{
+                "タイトル": details.get("タイトル", ""),
+                "公開年": details.get("公開年", ""),
+                "監督": details.get("監督", ""),
+                "出演者": details.get("出演者", ""),
+                "概要": details.get("概要", ""),
+                "感想": comment,
+                "ポスター": details.get("ポスター", None)
+            }]
+            # movie_data = {
+            #     "タイトル": details["title"],
+            #     "公開年": details.get("release_date", "")[:4],
+            #     "監督": director,
+            #     "出演者": ", ".join(cast),
+            #     "概要": details.get("overview", ""),
+            #     "感想": comment
+            # }
+            save_to_excel(movie_data, folder_id = folder_id)
+            st.success(f"✅ Google Driveに保存しました！")
+            # st.caption(f"https://drive.google.com/file/d/{file_id}/view")
 
     else:
         st.warning("検索結果が見つかりませんでした。")
