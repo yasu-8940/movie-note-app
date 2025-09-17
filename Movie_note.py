@@ -15,6 +15,7 @@ from io import BytesIO
 import io
 from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload, MediaIoBaseDownload
 from PIL import Image as PILImage
+import base64
 
 # .env から API_KEY を読み込み
 load_dotenv()
