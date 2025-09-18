@@ -16,6 +16,17 @@ import io
 from googleapiclient.http import MediaFileUpload, MediaIoBaseUpload, MediaIoBaseDownload
 from PIL import Image as PILImage
 import base64
+from google.oauth2 import service_account
+from googleapiclient.discovery import build
+
+SCOPES = ["https://www.googleapis.com/auth/drive"]
+# SCOPES = ["https://www.googleapis.com/auth/drive.file"]
+SERVICE_ACCOUNT_FILE = "service_account.json"  # ダウンロードしたJSON
+
+credentials = service_account.Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_FILE, scopes=SCOPES
+)
+service = build("drive", "v3", credentials=credentials)
 
 # .env から API_KEY を読み込み
 load_dotenv()
@@ -29,27 +40,12 @@ EXCEL_FILE = "movie_note.xlsx"
 
 def get_gdrive_service():
 
-    """Google Drive API サービスを返す（OAuth 方式）"""
-    creds = None
+    SERVICE_ACCOUNT_FILE = "service_account.json"
+    credentials = service_account.Credentials.from_service_account_file(
+        SERVICE_ACCOUNT_FILE, scopes=SCOPES
+    )
 
-    # Render 環境: TOKEN_B64 を優先
-    if "TOKEN_B64" in os.environ:
-        token_bytes = base64.b64decode(os.environ["TOKEN_B64"])
-        creds = pickle.loads(token_bytes)
-
-    # ローカル環境: token.pickle を利用
-    elif os.path.exists("token.pickle"):
-        with open("token.pickle", "rb") as token:
-            creds = pickle.load(token)
-
-    # 期限切れならリフレッシュ
-    if creds and creds.expired and creds.refresh_token:
-        creds.refresh(Request())
-
-    if not creds:
-        raise FileNotFoundError("token.pickle が見つかりません。")
-
-    return build("drive", "v3", credentials=creds)
+    return build("drive", "v3", credentials=credentials)
 
 # =========================================================
 # Driveからファイルをダウンロード
