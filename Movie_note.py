@@ -21,12 +21,6 @@ from googleapiclient.discovery import build
 
 SCOPES = ["https://www.googleapis.com/auth/drive"]
 # SCOPES = ["https://www.googleapis.com/auth/drive.file"]
-SERVICE_ACCOUNT_FILE = "service_account.json"  # ダウンロードしたJSON
-
-credentials = service_account.Credentials.from_service_account_file(
-    SERVICE_ACCOUNT_FILE, scopes=SCOPES
-)
-service = build("drive", "v3", credentials=credentials)
 
 # .env から API_KEY を読み込み
 load_dotenv()
@@ -40,10 +34,17 @@ EXCEL_FILE = "movie_note.xlsx"
 
 def get_gdrive_service():
 
-    SERVICE_ACCOUNT_FILE = "service_account.json"
-    credentials = service_account.Credentials.from_service_account_file(
-        SERVICE_ACCOUNT_FILE, scopes=SCOPES
-    )
+    if os.environ.get("GDRIVE_SERVICE_ACCOUNT_JSON"):  # Render等クラウド用
+        # 環境変数から読み込む
+        service_account_info = json.loads(os.environ["GDRIVE_SERVICE_ACCOUNT_JSON"])
+        credentials = service_account.Credentials.from_service_account_info(
+            service_account_info, scopes=SCOPES
+        )
+    else:  # ローカル用
+        SERVICE_ACCOUNT_FILE = "service_account.json"
+        credentials = service_account.Credentials.from_service_account_file(
+            SERVICE_ACCOUNT_FILE, scopes=SCOPES
+        )
 
     return build("drive", "v3", credentials=credentials)
 
