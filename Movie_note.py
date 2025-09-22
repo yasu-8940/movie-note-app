@@ -156,19 +156,19 @@ def get_movie_details(movie_id, api_key):
 # EXCELファイルを作成する
 # =========================================================
 
-def save_to_excel(movies, folder_id):
+def save_to_excel(movies, folder_id, existing_bytes=None):
     """映画データをExcelに保存し、Google Driveにもアップロードする"""
 
-    print("保存対象データ:", movies) # デバッグ用
-
-    # Excelファイルが既に存在すれば開く、なければ新規作成
-    if os.path.exists(EXCEL_FILE):
+    if existing_bytes:  # Driveから既存のExcelを取得済みならそれを開く
+        wb = load_workbook(filename=BytesIO(existing_bytes))
+        ws = wb.active
+    elif os.path.exists(EXCEL_FILE):  # ローカルに残っていれば使う
         wb = load_workbook(EXCEL_FILE)
         ws = wb.active
-    else:
+    else:  # 完全に新規
         wb = Workbook()
         ws = wb.active
-        ws.append(["登録日", "タイトル", "公開年", "監督", "出演者", "概要", "感想", "ポスター"])  # ヘッダー行
+        ws.append(["登録日", "タイトル", "公開年", "監督", "出演者", "概要", "感想", "ポスター"])
 
     # 画像バイト列を保持しておくリスト（openpyxl が保存時に参照するので生存させる）
     image_streams = []
@@ -307,17 +307,9 @@ if query:
                 "感想": comment,
                 "ポスター": details.get("ポスター", None)
             }]
-            # movie_data = {
-            #     "タイトル": details["title"],
-            #     "公開年": details.get("release_date", "")[:4],
-            #     "監督": director,
-            #     "出演者": ", ".join(cast),
-            #     "概要": details.get("overview", ""),
-            #     "感想": comment
-            # }
-            save_to_excel(movie_data, folder_id = folder_id)
+            
+            save_to_excel(movie_data, folder_id, existing_bytes=existing_bytes)
             st.success(f"✅ Google Driveに保存しました！")
-            # st.caption(f"https://drive.google.com/file/d/{file_id}/view")
 
     else:
         st.warning("検索結果が見つかりませんでした。")
